@@ -34,7 +34,7 @@ namespace Microsoft.PowerShell.EditorServices.Services.PowerShell.Console
 
         public override string ReadLine(CancellationToken cancellationToken) => _psesHost.InvokeDelegate(
             representation: "ReadLine",
-            new ExecutionOptions { MustRunInForeground = true, InterruptCurrentForeground = true, },
+            new ExecutionOptions { RequiresForeground = true },
             InvokePSReadLine,
             cancellationToken);
 
