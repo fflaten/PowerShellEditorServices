@@ -75,6 +75,17 @@ namespace Microsoft.PowerShell.EditorServices.Services.PowerShell.Host
 
         private CancellationToken _readKeyCancellationToken;
 
+        private int replScopeCancellationCounter;
+        private int doOneReplCounter;
+        private int doOneReplCancellationCounter;
+        private int promptCounter;
+        private int invokeReadLineCounter;
+        private int skippedPromptsCounter;
+        private int readKeyCancellationCounter;
+        private int sendKeyPressCounter;
+        private int mustRunInForegroundCounter;
+        private int interruptCurrentForegroundCounter;
+
         private bool _resettingRunspace;
 
         public PsesInternalHost(
@@ -288,8 +299,10 @@ namespace Microsoft.PowerShell.EditorServices.Services.PowerShell.Host
                 //  - unblock the consumer thread
                 using (_taskQueue.BlockConsumers())
                 {
+                    // TODO: Cancel ReadLine
                     CancelCurrentTask();
                     _taskQueue.Prepend(task);
+                    interruptCurrentForegroundCounter++;
                     _skipNextPrompt = true;
                 }
 
@@ -684,11 +697,16 @@ namespace Microsoft.PowerShell.EditorServices.Services.PowerShell.Host
                     return;
                 }
 
-                using CancellationScope cancellationScope = _cancellationContext.EnterScope(false);
+                using CancellationScope loopCancellationScope = _cancellationContext.EnterScope(false, "loop");
 
                 try
                 {
-                    DoOneRepl(cancellationScope.CancellationToken);
+                    using CancellationScope replCancellationScope = _cancellationContext.EnterScope(false, "repl", CancellationToken.None);
+                    CancellationTokenRegistration registration = replCancellationScope.CancellationToken.Register(
+                        () => replScopeCancellationCounter++
+                    );
+
+                    DoOneRepl(replCancellationScope.CancellationToken);
                 }
                 catch (OperationCanceledException)
                 {
@@ -705,10 +723,10 @@ namespace Microsoft.PowerShell.EditorServices.Services.PowerShell.Host
                 }
 
                 while (!ShouldExitExecutionLoop
-                    && !cancellationScope.CancellationToken.IsCancellationRequested
+                    && !loopCancellationScope.CancellationToken.IsCancellationRequested
                     && _taskQueue.TryTake(out ISynchronousTask task))
                 {
-                    task.ExecuteSynchronously(cancellationScope.CancellationToken);
+                    task.ExecuteSynchronously(loopCancellationScope.CancellationToken);
                 }
 
                 if (_shouldExit
@@ -722,6 +740,7 @@ namespace Microsoft.PowerShell.EditorServices.Services.PowerShell.Host
 
         private void DoOneRepl(CancellationToken cancellationToken)
         {
+            doOneReplCounter++;
             if (!_hostInfo.ConsoleReplEnabled)
             {
                 // Throttle the REPL loop with a sleep because we're not interactively reading input from the user.
@@ -746,8 +765,14 @@ namespace Microsoft.PowerShell.EditorServices.Services.PowerShell.Host
             // So we set _skipNextPrompt to do that.
             if (_skipNextPrompt)
             {
+                skippedPromptsCounter++;
                 _skipNextPrompt = false;
                 return;
+            }
+
+            if (cancellationToken.IsCancellationRequested)
+            {
+                doOneReplCancellationCounter++;
             }
 
             try
@@ -807,6 +832,7 @@ namespace Microsoft.PowerShell.EditorServices.Services.PowerShell.Host
 
         private string GetPrompt(CancellationToken cancellationToken)
         {
+            promptCounter++;
             Runspace.ThrowCancelledIfUnusable();
             string prompt = DefaultPrompt;
             try
@@ -834,7 +860,7 @@ namespace Microsoft.PowerShell.EditorServices.Services.PowerShell.Host
 
         private string InvokeReadLine(CancellationToken cancellationToken)
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            invokeReadLineCounter++;
             try
             {
                 // TODO: If we can pass the cancellation token to ReadKey directly in PSReadLine, we
@@ -983,7 +1009,7 @@ namespace Microsoft.PowerShell.EditorServices.Services.PowerShell.Host
                 return;
             }
 
-            using (CancellationScope cancellationScope = _cancellationContext.EnterScope(isIdleScope: true, idleCancellationToken))
+            using (CancellationScope cancellationScope = _cancellationContext.EnterScope(isIdleScope: true, "idle", idleCancellationToken))
             {
                 while (!cancellationScope.CancellationToken.IsCancellationRequested
                     && _taskQueue.TryTake(out ISynchronousTask task))
@@ -994,6 +1020,7 @@ namespace Microsoft.PowerShell.EditorServices.Services.PowerShell.Host
                         // we place it back at the front of the queue, and cancel the readline task
                         _taskQueue.Prepend(task);
                         _skipNextPrompt = true;
+                        mustRunInForegroundCounter++;
                         _cancellationContext.CancelIdleParentTask();
                         return;
                     }
@@ -1043,10 +1070,16 @@ namespace Microsoft.PowerShell.EditorServices.Services.PowerShell.Host
             // input. This leads to a myriad of problems, but we circumvent them by pretending to
             // press a key, thus allowing ReadKey to return, and us to ignore it.
             using CancellationTokenRegistration registration = _readKeyCancellationToken.Register(
-                () => _languageServer?.SendNotification("powerShell/sendKeyPress"));
+                () => { _languageServer?.SendNotification("powerShell/sendKeyPress"); sendKeyPressCounter++; });
 
             // TODO: We may want to allow users of PSES to override this method call.
             _lastKey = System.Console.ReadKey(intercept);
+
+            if (_readKeyCancellationToken.IsCancellationRequested)
+            {
+                readKeyCancellationCounter++;
+            }
+
             return _lastKey.Value;
         }
 

@@ -1,4 +1,4 @@
-// Copyright (c) Microsoft Corporation.
+﻿// Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
 using System;
@@ -30,16 +30,16 @@ namespace Microsoft.PowerShell.EditorServices.Services.PowerShell.Utility
 
         public CancellationContext() => _cancellationSourceStack = new ConcurrentStack<CancellationScope>();
 
-        public CancellationScope EnterScope(bool isIdleScope, CancellationToken cancellationToken)
+        public CancellationScope EnterScope(bool isIdleScope, string name, CancellationToken cancellationToken)
         {
             CancellationTokenSource newScopeCancellationSource = _cancellationSourceStack.TryPeek(out CancellationScope parentScope)
                 ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, parentScope.CancellationToken)
                 : CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
-            return EnterScope(isIdleScope, newScopeCancellationSource);
+            return EnterScope(isIdleScope, name, newScopeCancellationSource);
         }
 
-        public CancellationScope EnterScope(bool isIdleScope) => EnterScope(isIdleScope, CancellationToken.None);
+        public CancellationScope EnterScope(bool isIdleScope, string name) => EnterScope(isIdleScope, name, CancellationToken.None);
 
         public void CancelCurrentTask()
         {
@@ -77,16 +77,19 @@ namespace Microsoft.PowerShell.EditorServices.Services.PowerShell.Utility
             }
         }
 
-        private CancellationScope EnterScope(bool isIdleScope, CancellationTokenSource cancellationFrameSource)
+        private CancellationScope EnterScope(bool isIdleScope, string name, CancellationTokenSource cancellationFrameSource)
         {
-            CancellationScope scope = new(_cancellationSourceStack, cancellationFrameSource, isIdleScope);
+            CancellationScope scope = new(_cancellationSourceStack, cancellationFrameSource, isIdleScope, name);
             _cancellationSourceStack.Push(scope);
             return scope;
         }
     }
 
+    [System.Diagnostics.DebuggerDisplay("Name = {Name}")]
     internal class CancellationScope : IDisposable
     {
+        private string Name { get; }
+
         private readonly ConcurrentStack<CancellationScope> _cancellationStack;
 
         private readonly CancellationTokenSource _cancellationSource;
@@ -94,11 +97,13 @@ namespace Microsoft.PowerShell.EditorServices.Services.PowerShell.Utility
         internal CancellationScope(
             ConcurrentStack<CancellationScope> cancellationStack,
             CancellationTokenSource frameCancellationSource,
-            bool isIdleScope)
+            bool isIdleScope,
+            string name = "Unknown scope")
         {
             _cancellationStack = cancellationStack;
             _cancellationSource = frameCancellationSource;
             IsIdleScope = isIdleScope;
+            Name = name;
         }
 
         public CancellationToken CancellationToken => _cancellationSource.Token;
